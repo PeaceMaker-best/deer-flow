@@ -29,6 +29,16 @@
       },
       "description": "Official OpenViking tools for explicit memory and resource operations"
     },
+    "multi-tenant-http": {
+      "enabled": false,
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers_from_context": {
+        "Authorization": "MCP_AUTHORIZATION",
+        "X-Organization": "MCP_ORGANIZATION"
+      },
+      "description": "Example request-scoped MCP headers for multi-tenant tool calls"
+    },
     "postgres": {
       "enabled": false,
       "type": "stdio",

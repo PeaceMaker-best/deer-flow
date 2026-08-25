@@ -4,6 +4,7 @@ import errno
 import json
 import logging
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -23,6 +24,8 @@ from deerflow.constants import (
 
 logger = logging.getLogger(__name__)
 
+_MCP_HTTP_HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
 _non_atomic_fallback_targets: set[Path] = set()
 _non_atomic_fallback_targets_lock = threading.Lock()
 
@@ -34,6 +37,21 @@ def normalize_mcp_transport_alias(data: Any) -> Any:
         if transport and not data.get("type"):
             return {**data, "type": transport}
     return data
+
+
+def validate_mcp_headers_from_context(value: dict[str, str]) -> dict[str, str]:
+    """Validate a header-name to request-secret-name mapping."""
+    seen_names: set[str] = set()
+    for header_name, secret_key in value.items():
+        if _MCP_HTTP_HEADER_NAME_PATTERN.fullmatch(header_name) is None:
+            raise ValueError(f"headers_from_context header name {header_name!r} is not a valid HTTP field name")
+        normalized_name = header_name.casefold()
+        if normalized_name in seen_names:
+            raise ValueError("headers_from_context header names must be unique case-insensitively")
+        seen_names.add(normalized_name)
+        if not secret_key.strip():
+            raise ValueError(f"headers_from_context secret key for header {header_name!r} must not be empty")
+    return value
 
 
 class McpRoutingConfig(BaseModel):
@@ -165,6 +183,10 @@ class McpServerConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict, description="Environment variables for the MCP server")
     url: str | None = Field(default=None, description="URL of the MCP server (for sse or http type)")
     headers: dict[str, str] = Field(default_factory=dict, description="HTTP headers to send (for sse or http type)")
+    headers_from_context: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map HTTP header names to request-scoped config.context.secrets keys for each tool call",
+    )
     oauth: McpOAuthConfig | None = Field(default=None, description="OAuth configuration (for sse or http type)")
     user_auth: McpUserScopedAuthConfig | None = Field(
         default=None,
@@ -210,8 +232,15 @@ class McpServerConfig(BaseModel):
         """
         return normalize_mcp_transport_alias(data)
 
+    @field_validator("headers_from_context")
+    @classmethod
+    def _validate_headers_from_context(cls, value: dict[str, str]) -> dict[str, str]:
+        return validate_mcp_headers_from_context(value)
+
     @model_validator(mode="after")
     def _validate_task_tool_bindings(self) -> "McpServerConfig":
+        if self.headers_from_context and self.task_toolsets:
+            raise ValueError("headers_from_context uses request-scoped secrets and cannot be combined with durable MCP task_toolsets")
         claimed: dict[str, str] = {}
         for toolset in self.task_toolsets:
             for role in ("submit_tool", "status_tool", "cancel_tool"):

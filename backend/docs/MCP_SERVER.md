@@ -344,9 +344,64 @@ Example:
 }
 ```
 
+## Request-scoped Headers (HTTP/SSE MCP Servers)
+
+For multi-tenant HTTP/SSE servers, `headers_from_context` declaratively maps
+HTTP header names to keys in the current run's `config.context.secrets`:
+
+```json
+{
+  "mcpServers": {
+    "tenant-api": {
+      "enabled": true,
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers_from_context": {
+        "Authorization": "MCP_AUTHORIZATION",
+        "X-Environment": "MCP_ENVIRONMENT",
+        "X-Organization": "MCP_ORGANIZATION"
+      }
+    }
+  }
+}
+```
+
+Supply the full header values on every run request:
+
+```json
+{
+  "config": {
+    "context": {
+      "secrets": {
+        "MCP_AUTHORIZATION": "Bearer <request-scoped credential>",
+        "MCP_ENVIRONMENT": "production",
+        "MCP_ORGANIZATION": "org-123"
+      }
+    }
+  }
+}
+```
+
+The mapping contains secret *names*, not values, so it can remain in
+`extensions_config.json`. DeerFlow resolves the values separately for every
+tool call, removes them from persisted and API-visible run configuration, and
+never logs them. Missing or empty mapped values fail the call closed. Mapped
+values override static `headers`, OAuth, and `user_auth`; a custom interceptor
+registered through `mcpInterceptors` runs closer to the transport and can make
+an explicit final override.
+
+Request-scoped values apply to tool calls, not startup `tools/list` discovery.
+If discovery requires authentication, configure a suitable server-level
+`headers` value. `headers_from_context` is ignored for stdio servers and cannot
+be combined with `task_toolsets`: durable task polls outlive the Agent request,
+so task-enabled servers must use durable server-level authentication.
+
 ## Custom Tool Interceptors
 
-You can register custom interceptors that run before every MCP tool call. This is useful for injecting per-request headers (e.g., user auth tokens from the LangGraph execution context), logging, or metrics.
+You can register custom interceptors that run before every MCP tool call. Use
+the declarative `headers_from_context` setting above for direct request-secret
+to header mappings; custom interceptors remain useful for value transforms,
+logging, metrics, and other application-specific behavior.
 
 Declare interceptors in `extensions_config.json` using the `mcpInterceptors` field:
 

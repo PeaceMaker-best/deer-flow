@@ -21,6 +21,7 @@ from deerflow.config.extensions_config import (
     get_extensions_config,
     normalize_mcp_transport_alias,
     reload_extensions_config,
+    validate_mcp_headers_from_context,
 )
 from deerflow.constants import DEFAULT_MCP_SESSION_INIT_TIMEOUT
 from deerflow.mcp.cache import reset_mcp_tools_cache
@@ -399,6 +400,10 @@ class McpServerConfigResponse(BaseModel):
     env: dict[str, str] = Field(default_factory=dict, description="Environment variables for the MCP server")
     url: str | None = Field(default=None, description="URL of the MCP server (for sse or http type)")
     headers: dict[str, str] = Field(default_factory=dict, description="HTTP headers to send (for sse or http type)")
+    headers_from_context: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map HTTP header names to request-scoped config.context.secrets keys for each tool call",
+    )
     oauth: McpOAuthConfigResponse | None = Field(default=None, description="OAuth configuration for MCP HTTP/SSE servers")
     user_auth: McpUserScopedAuthConfigResponse | None = Field(default=None, description="Per-user credential injection for MCP HTTP/SSE servers")
     description: str = Field(default="", description="Human-readable description of what this MCP server provides")
@@ -427,6 +432,17 @@ class McpServerConfigResponse(BaseModel):
     def _accept_transport_alias(cls, data: Any) -> Any:
         """Keep API parsing aligned with the runtime MCP config model."""
         return normalize_mcp_transport_alias(data)
+
+    @field_validator("headers_from_context")
+    @classmethod
+    def _validate_headers_from_context(cls, value: dict[str, str]) -> dict[str, str]:
+        return validate_mcp_headers_from_context(value)
+
+    @model_validator(mode="after")
+    def _reject_request_headers_for_durable_tasks(self) -> "McpServerConfigResponse":
+        if self.headers_from_context and self.task_toolsets:
+            raise ValueError("headers_from_context uses request-scoped secrets and cannot be combined with durable MCP task_toolsets")
+        return self
 
 
 class McpConfigResponse(BaseModel):
