@@ -1,8 +1,8 @@
 """Tests for ToolResultSanitizationMiddleware (remote tool-result injection guard).
 
 DeerFlow neutralizes framework/injection tags in the genuine user message. These
-tests pin the same neutralization onto remote tool results (web_fetch /
-web_search / image_search / web_capture), and confirm local tool output is left
+tests pin the same neutralization onto remote tool results (web, stateful
+browser, and knowledge retrieval), and confirm local tool output is left
 untouched.
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
@@ -132,6 +133,32 @@ class TestWebCaptureResultsNeutralized:
         result = mw.wrap_tool_call(_request("web_capture"), lambda _: self._capture_command("Not Found"))
         content = result.update["messages"][0].content
         assert "warning: target page responded 404 Not Found" in content
+
+
+class TestFirstPartyRemoteContentResultsNeutralized:
+    """All first-party tools that surface third-party text share the boundary."""
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_get_text",
+            "browser_back",
+            "knowledge_search",
+        ],
+    )
+    def test_remote_content_tool_result_tags_escaped(self, tool_name: str):
+        mw = ToolResultSanitizationMiddleware()
+        result = mw.wrap_tool_call(_request(tool_name), lambda _: _msg(_MALICIOUS_PAGE, name=tool_name))
+
+        assert isinstance(result, ToolMessage)
+        assert "&lt;system-reminder&gt;" in result.content
+        assert "<system-reminder>" not in result.content
+        assert "--- END USER INPUT ---" not in result.content
+        assert "[END USER INPUT]" in result.content
 
 
 class TestLocalToolsUntouched:

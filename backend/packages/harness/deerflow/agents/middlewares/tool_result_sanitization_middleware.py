@@ -2,11 +2,11 @@
 
 DeerFlow already treats the genuine user message as untrusted and neutralizes
 framework/injection tags in it (see ``InputSanitizationMiddleware``). Remote
-content that the agent *fetches* — web page bodies and search snippets returned
-by ``web_fetch`` / ``web_search`` / ``image_search``, plus the target site's
-response-status text surfaced by ``web_capture`` — is equally untrusted, yet
-it entered the model context verbatim. A page the attacker controls could embed
-a forged ``<system-reminder>`` block (or a ``--- END USER INPUT ---`` marker) and
+content that the agent *fetches* — web page bodies and search snippets, stateful
+browser page text/snapshots, knowledge-base documents, and the target site's
+response-status text surfaced by ``web_capture`` — is equally untrusted, yet it
+entered the model context verbatim. An attacker-controlled source could embed a
+forged ``<system-reminder>`` block (or a ``--- END USER INPUT ---`` marker) and
 have it reach the model as authoritative framework context.
 
 This middleware narrows that gap by applying the *same* structural
@@ -39,12 +39,13 @@ from deerflow.agents.middlewares.tool_transform_meta import append_tool_transfor
 logger = logging.getLogger(__name__)
 
 # Tool names whose results are attacker-influenceable remote content. The
-# first-party search/fetch providers all normalize to ``web_fetch`` /
-# ``web_search`` / ``image_search`` (see community/*/tools.py), so the set stays
-# provider-agnostic. ``web_capture`` (Browserless screenshot) additionally
-# surfaces the target site's response-status text (``X-Response-Status``, a
-# free-form reason phrase controlled by whatever server is being captured) into
-# its result message, so it is untrusted remote content too and belongs here.
+# first-party search/fetch providers normalize to ``web_fetch`` / ``web_search`` /
+# ``image_search`` (see community/*/tools.py), while ``knowledge_search`` returns
+# operator-selected RAGFlow documents. Stateful browser actions return the
+# current page title, accessibility snapshot, or visible text after each action.
+# ``web_capture`` (Browserless screenshot) additionally surfaces the target
+# site's response-status text (``X-Response-Status``, a free-form reason phrase
+# controlled by whatever server is being captured) into its result message.
 #
 # Known limitation: the gate is name-based. An MCP server may expose a
 # remote-content tool under an arbitrary name (e.g. ``fetch_url`` /
@@ -60,6 +61,13 @@ _REMOTE_CONTENT_TOOL_NAMES: frozenset[str] = frozenset(
         "web_search",
         "image_search",
         "web_capture",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_get_text",
+        "browser_back",
+        "knowledge_search",
     }
 )
 
@@ -122,10 +130,10 @@ def _sanitize_result(result: ToolMessage | Command) -> ToolMessage | Command:
 class ToolResultSanitizationMiddleware(AgentMiddleware[AgentState]):
     """Escape injection/framework tags in remote tool results before the model sees them.
 
-    Results of the first-party network tools (``web_fetch`` / ``web_search`` /
-    ``image_search`` / ``web_capture``) are rewritten; every other tool's output
-    is returned unchanged. Mirrors the user-input guardrail so untrusted remote
-    content and untrusted user input receive the same structural neutralization.
+    Results of first-party web, browser, and knowledge-retrieval tools are
+    rewritten; every other tool's output is returned unchanged. Mirrors the
+    user-input guardrail so untrusted remote content and untrusted user input
+    receive the same structural neutralization.
 
     Scope is a name-based allowlist (``_REMOTE_CONTENT_TOOL_NAMES``): it reliably
     covers the built-in web tools without false positives on local tools. It does
