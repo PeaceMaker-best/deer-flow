@@ -386,6 +386,168 @@ def test_update_memory_fact_route_returns_specific_error_for_invalid_confidence(
     assert response.json()["detail"] == "Invalid confidence value; must be between 0 and 1."
 
 
+# ── agent-scoped reads / fact CRUD ─────────────────────────────────────────
+
+
+def test_memory_read_routes_forward_normalized_agent_scope() -> None:
+    app = FastAPI()
+    app.include_router(memory.router)
+    manager = MagicMock()
+    manager.get_memory.return_value = _sample_memory()
+    manager.reload_memory.return_value = _sample_memory()
+    config = SimpleNamespace(
+        enabled=True,
+        mode="middleware",
+        injection_enabled=True,
+        shutdown_flush_timeout_seconds=30.0,
+        manager_class="deermem",
+        backend_config={},
+    )
+
+    with (
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=manager),
+        patch("app.gateway.routers.memory.get_memory_config", return_value=config),
+        patch("app.gateway.routers.memory.get_effective_user_id", return_value="alice"),
+        TestClient(app) as client,
+    ):
+        assert client.get("/api/memory", params={"agent_name": "Research-Agent"}).status_code == 200
+        assert client.get("/api/memory/export", params={"agent_name": "Research-Agent"}).status_code == 200
+        assert client.get("/api/memory/status", params={"agent_name": "Research-Agent"}).status_code == 200
+        assert client.post("/api/memory/reload", params={"agent_name": "Research-Agent"}).status_code == 200
+
+    assert manager.get_memory.call_count == 3
+    for call in manager.get_memory.call_args_list:
+        assert call.kwargs == {"user_id": "alice", "agent_name": "research-agent"}
+    manager.reload_memory.assert_called_once_with(user_id="alice", agent_name="research-agent")
+
+
+def test_scoped_reload_fallback_keeps_the_selected_agent() -> None:
+    app = FastAPI()
+    app.include_router(memory.router)
+    manager = MagicMock()
+    manager.reload_memory.side_effect = NotImplementedError("reload is unsupported")
+    manager.get_memory.return_value = _sample_memory()
+
+    with (
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=manager),
+        patch("app.gateway.routers.memory.get_effective_user_id", return_value="alice"),
+        TestClient(app) as client,
+    ):
+        response = client.post("/api/memory/reload", params={"agent_name": "Research-Agent"})
+
+    assert response.status_code == 200
+    manager.get_memory.assert_called_once_with(user_id="alice", agent_name="research-agent")
+
+
+def test_memory_fact_crud_forwards_normalized_agent_scope() -> None:
+    app = FastAPI()
+    app.include_router(memory.router)
+    manager = MagicMock()
+    manager.create_fact.return_value = (_sample_memory(), "fact-new")
+    manager.update_fact.return_value = _sample_memory()
+    manager.delete_fact.return_value = _sample_memory()
+
+    with (
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=manager),
+        patch("app.gateway.routers.memory.get_effective_user_id", return_value="alice"),
+        TestClient(app) as client,
+    ):
+        created = client.post(
+            "/api/memory/facts",
+            params={"agent_name": "Research-Agent"},
+            json={"content": "Use peer-reviewed sources."},
+        )
+        updated = client.patch(
+            "/api/memory/facts/fact-shared",
+            params={"agent_name": "Research-Agent"},
+            json={"confidence": 0.95},
+        )
+        deleted = client.delete(
+            "/api/memory/facts/fact-shared",
+            params={"agent_name": "Research-Agent"},
+        )
+
+    assert created.status_code == 200
+    assert updated.status_code == 200
+    assert deleted.status_code == 200
+    assert manager.create_fact.call_args.kwargs["agent_name"] == "research-agent"
+    assert manager.update_fact.call_args.kwargs["agent_name"] == "research-agent"
+    assert manager.delete_fact.call_args.kwargs["agent_name"] == "research-agent"
+
+
+def test_memory_agent_scope_rejects_invalid_custom_agent_name() -> None:
+    app = FastAPI()
+    app.include_router(memory.router)
+    manager = MagicMock()
+
+    with patch("app.gateway.routers.memory.get_memory_manager", return_value=manager):
+        with TestClient(app) as client:
+            response = client.get("/api/memory", params={"agent_name": "../research-agent"})
+
+    assert response.status_code == 422
+    manager.get_memory.assert_not_called()
+
+
+def test_scoped_fact_update_and_delete_cannot_cross_user_or_agent_buckets(tmp_path) -> None:
+    app = FastAPI()
+    app.include_router(memory.router)
+    manager = DeerMem(backend_config={"storage_path": str(tmp_path)})
+    shared_id = "fact_shared"
+    researcher_memory = _sample_memory(
+        facts=[
+            {
+                "id": shared_id,
+                "content": "Researcher prefers papers.",
+                "category": "preference",
+                "confidence": 0.8,
+                "createdAt": "2026-09-05T00:00:00Z",
+                "source": "manual",
+            }
+        ]
+    )
+    writer_memory = _sample_memory(
+        facts=[
+            {
+                "id": shared_id,
+                "content": "Writer prefers short paragraphs.",
+                "category": "preference",
+                "confidence": 0.9,
+                "createdAt": "2026-09-05T00:00:00Z",
+                "source": "manual",
+            }
+        ]
+    )
+    manager.import_memory(researcher_memory, user_id="alice", agent_name="research-agent")
+    manager.import_memory(writer_memory, user_id="alice", agent_name="writer-agent")
+    manager.import_memory(researcher_memory, user_id="bob", agent_name="research-agent")
+
+    with (
+        patch("app.gateway.routers.memory.get_memory_manager", return_value=manager),
+        patch("app.gateway.routers.memory.get_effective_user_id", return_value="alice"),
+        TestClient(app) as client,
+    ):
+        updated = client.patch(
+            f"/api/memory/facts/{shared_id}",
+            params={"agent_name": "Research-Agent"},
+            json={"content": "Researcher now prefers primary sources."},
+        )
+        deleted = client.delete(
+            f"/api/memory/facts/{shared_id}",
+            params={"agent_name": "Research-Agent"},
+        )
+        researcher = client.get("/api/memory", params={"agent_name": "research-agent"})
+        writer = client.get("/api/memory", params={"agent_name": "writer-agent"})
+
+    other_user = manager.get_memory(user_id="bob", agent_name="research-agent")
+
+    assert updated.status_code == 200
+    assert updated.json()["facts"][0]["content"] == "Researcher now prefers primary sources."
+    assert deleted.status_code == 200
+    assert researcher.json()["facts"] == []
+    assert [fact["content"] for fact in writer.json()["facts"]] == ["Writer prefers short paragraphs."]
+    assert [fact["content"] for fact in other_user["facts"]] == ["Researcher prefers papers."]
+
+
 # ── bound-owner (internal caller) ──────────────────────────────────────────
 
 

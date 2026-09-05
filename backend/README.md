@@ -122,10 +122,12 @@ FastAPI application providing REST endpoints for frontend integration:
 | `POST /api/mcp/cache/reset` | Reset cached MCP tools so they reload on next use |
 | `GET/PUT /api/skills` | List and manage skills |
 | `POST /api/skills/install` | Install skill from `.skill` archive |
-| `GET /api/memory` | Retrieve memory data |
-| `POST /api/memory/reload` | Force memory reload |
+| `GET /api/memory` | Retrieve shared summaries and facts; optional `agent_name` selects a custom-agent fact scope |
+| `POST /api/memory/reload` | Force memory reload; accepts the same optional `agent_name` scope |
+| `POST /api/memory/facts`, `PATCH/DELETE /api/memory/facts/{fact_id}` | Create, update, or delete one fact in the optional `agent_name` scope |
+| `GET /api/memory/export` | Export shared summaries and the optional `agent_name` fact scope |
 | `GET /api/memory/config` | Memory configuration |
-| `GET /api/memory/status` | Combined config + data |
+| `GET /api/memory/status` | Combined config + data for the optional `agent_name` fact scope |
 | `GET /api/threads/{id}/runs/{run_id}/events` | Debug/audit events for one run; filter `event_types=context:memory` for effective memory identity |
 | `POST /api/threads/{id}/uploads` | Upload files (auto-converts PDF/PPT/Excel/Word to Markdown, rejects directory paths, auto-renames duplicate filenames in one request) |
 | `GET /api/threads/{id}/uploads/list` | List uploaded files |
