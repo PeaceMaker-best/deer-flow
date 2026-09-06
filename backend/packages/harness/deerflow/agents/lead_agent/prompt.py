@@ -772,8 +772,6 @@ def _get_memory_context(
     Returns:
         Formatted memory context string wrapped in XML tags, or empty string if disabled.
     """
-    from deerflow.agents.memory import MemoryManagerError, MemoryReadError
-
     config = None
     try:
         from deerflow.agents.memory import get_memory_manager
@@ -801,14 +799,12 @@ def _get_memory_context(
 {memory_content}
 </memory>
 """
-    except MemoryReadError:
-        logger.exception("Required memory context could not be loaded")
-        raise
     except Exception as exc:
         logger.exception("Failed to load memory context")
-        backend_config = getattr(config, "backend_config", {}) if config is not None else {}
-        failure_policy = backend_config.get("failure_policy", {}) if isinstance(backend_config, dict) else {}
-        if isinstance(exc, MemoryManagerError) and isinstance(failure_policy, dict) and failure_policy.get("read") == "fail_closed":
+        from deerflow.agents.memory import MemoryManagerError
+
+        failure_policy = getattr(config, "backend_config", {}).get("failure_policy", {}) if config is not None else {}
+        if isinstance(exc, MemoryManagerError) and failure_policy.get("read") == "fail_closed":
             raise
         return ""
 

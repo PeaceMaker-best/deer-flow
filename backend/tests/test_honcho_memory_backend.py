@@ -11,7 +11,7 @@ import pytest
 from deerflow.agents.memory.backends.honcho.client import HonchoClient, HonchoRequestError
 from deerflow.agents.memory.backends.honcho.config import HonchoConfig, sanitize_id
 from deerflow.agents.memory.backends.honcho.honcho_manager import HonchoMemoryManager, _stable_id
-from deerflow.agents.memory.manager import MemoryManagerError, MemoryReadError
+from deerflow.agents.memory.manager import MemoryManagerError
 
 
 class TestHonchoConfig:
@@ -385,8 +385,7 @@ class TestHonchoManagerRead:
     def test_get_context_fail_closed_raises_contract_error(self):
         mgr, fake = _manager(failure_policy={"read": "fail_closed"})
         fake.raise_on = "representation"
-        assert mgr.read_failures_are_fatal is True
-        with pytest.raises(MemoryReadError):
+        with pytest.raises(MemoryManagerError):
             mgr.get_context("u1")
 
     def test_get_context_fail_open_swallows_non_honcho_exceptions(self):

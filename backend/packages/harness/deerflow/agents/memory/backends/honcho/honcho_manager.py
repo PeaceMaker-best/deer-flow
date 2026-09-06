@@ -41,7 +41,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import PrivateAttr
 
 # ABC contract -- the ONE allowed `from deerflow` import in this backend folder.
-from deerflow.agents.memory.manager import MemoryManager, MemoryManagerError, MemoryReadError
+from deerflow.agents.memory.manager import MemoryManager, MemoryManagerError
 
 from .client import HonchoClient
 from .config import HonchoConfig, sanitize_id
@@ -122,13 +122,6 @@ class HonchoMemoryManager(MemoryManager):
         """
         return cls(backend_config=backend_config, mode=mode)
 
-    @classmethod
-    def read_failures_are_fatal_for_config(
-        cls,
-        backend_config: dict[str, Any] | None,
-    ) -> bool:
-        return HonchoConfig.from_backend_config(backend_config).read_fail_closed
-
     # ── identity resolution (fail closed) ────────────────────────────────
     def _workspace(self, user_id: str | None) -> str | None:
         if not user_id:
@@ -145,7 +138,7 @@ class HonchoMemoryManager(MemoryManager):
     def _read_or_fallback(self, fallback: Any, fn: Any) -> Any:
         """Single ``failure_policy.read`` gate for every recall path, mirroring
         mem0's helper of the same name: fail-open (default) logs and returns
-        ``fallback``; ``fail_closed`` wraps into ``MemoryReadError``. The
+        ``fallback``; ``fail_closed`` wraps into ``MemoryManagerError``. The
         broad ``except Exception`` is the containment boundary — no client
         exception may escape into ``MemoryMiddleware.after_agent``."""
         try:
@@ -154,7 +147,7 @@ class HonchoMemoryManager(MemoryManager):
             raise
         except Exception as exc:
             if self._config.read_fail_closed:
-                raise MemoryReadError(f"honcho memory recall failed: {exc}") from exc
+                raise MemoryManagerError(f"honcho memory recall failed: {exc}") from exc
             logger.warning("honcho memory: recall failed (fail-open): %s", exc)
             return fallback
 
