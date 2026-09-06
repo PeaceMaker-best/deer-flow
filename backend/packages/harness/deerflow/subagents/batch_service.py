@@ -15,6 +15,7 @@ from deerflow.subagents.capacity import SubagentExecutionCapacity
 from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name
 from deerflow.subagents.executor import (
     SubagentExecutor,
+    SubagentResult,
     SubagentStatus,
     cleanup_background_task,
     get_background_task_result,
@@ -193,6 +194,7 @@ class SubagentBatchService:
     async def _execute_item(self, item: dict[str, Any]) -> None:
         item_id = item["id"]
         execution_id: str | None = None
+        result: SubagentResult | None = None
         try:
             batch = item["batch"]
             self._item_batches[item_id] = batch["id"]
@@ -275,7 +277,37 @@ class SubagentBatchService:
                         raise asyncio.CancelledError
                 except TimeoutError:
                     pass
-
+        except asyncio.CancelledError:
+            if execution_id is not None:
+                request_cancel_background_task(execution_id)
+            # Do not finalize on process shutdown. The durable lease expires and
+            # another worker reclaims the same stable item key.
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Durable subagent batch item failed (item_id=%s)",
+                item_id,
+            )
+            if execution_id is not None and not await self._cancel_and_drain_execution(item_id, execution_id, result):
+                # Leave recovery to the durable lease. Never explicitly requeue
+                # an item whose previous execution may still be unwinding.
+                return
+            await self._repository.finalize_item(
+                item_id,
+                lease_owner=self._lease_owner,
+                succeeded=False,
+                result=None,
+                result_preview=None,
+                result_truncated=False,
+                error=str(exc)[:4_000],
+                stop_reason=None,
+                token_usage=None,
+                model_name=None,
+                completed_at=datetime.now(UTC),
+            )
+        else:
+            # A failed outcome write is not an execution failure. In particular,
+            # do not convert an already successful result into an immediate retry.
             raw_result = result.result or ""
             if getattr(result, "admission_failure", False):
                 await self._repository.requeue_item_after_admission_failure(
@@ -301,32 +333,51 @@ class SubagentBatchService:
                 model_name=effective_model,
                 completed_at=datetime.now(UTC),
             )
-        except asyncio.CancelledError:
-            if execution_id is not None:
-                request_cancel_background_task(execution_id)
-            # Do not finalize on process shutdown. The durable lease expires and
-            # another worker reclaims the same stable item key.
-            raise
-        except Exception as exc:
-            logger.exception(
-                "Durable subagent batch item failed (item_id=%s)",
-                item_id,
-            )
-            await self._repository.finalize_item(
-                item_id,
-                lease_owner=self._lease_owner,
-                succeeded=False,
-                result=None,
-                result_preview=None,
-                result_truncated=False,
-                error=str(exc)[:4_000],
-                stop_reason=None,
-                token_usage=None,
-                model_name=None,
-                completed_at=datetime.now(UTC),
-            )
         finally:
             self._execution_ids.pop(item_id, None)
             self._item_batches.pop(item_id, None)
             if execution_id is not None:
                 cleanup_background_task(execution_id)
+
+    async def _cancel_and_drain_execution(self, item_id: str, execution_id: str, result: SubagentResult | None) -> bool:
+        """Stop an owned child before explicitly releasing its item for retry.
+
+        Business status may become terminal before graph/tool teardown exits.
+        Keep the lease alive while waiting for the executor's completion fence;
+        uncertainty leaves the item to the existing lease-recovery policy.
+        """
+        request_cancel_background_task(execution_id)
+        if result is None:
+            result = get_background_task_result(execution_id)
+        if result is None:
+            logger.warning("Cannot confirm batch execution teardown (item_id=%s, execution_id=%s)", item_id, execution_id)
+            return False
+
+        lease_valid = True
+        loop = asyncio.get_running_loop()
+        next_renew_at = loop.time()
+        try:
+            # One configured lease interval bounds recovery work, including a
+            # stalled repository call. Timeout is not proof of child completion.
+            async with asyncio.timeout(self._config.lease_seconds):
+                while not result.execution_done_event.is_set():
+                    if lease_valid and loop.time() >= next_renew_at:
+                        try:
+                            lease = await self._repository.renew_item_lease(
+                                item_id,
+                                lease_owner=self._lease_owner,
+                                lease_seconds=self._config.lease_seconds,
+                                now=datetime.now(UTC),
+                            )
+                            lease_valid = lease["valid"]
+                        except Exception:
+                            lease_valid = False
+                            logger.exception("Cannot maintain batch lease during teardown (item_id=%s)", item_id)
+                        next_renew_at = loop.time() + self._config.lease_seconds / 3
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            logger.warning("Batch execution teardown timed out; leaving lease recovery in charge (item_id=%s, execution_id=%s)", item_id, execution_id)
+            return False
+        # Cancellation of this supervisor propagates without finalizing. The
+        # caller's finally registers executor-owned deferred registry cleanup.
+        return lease_valid

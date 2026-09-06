@@ -87,6 +87,7 @@ Async task delegation with concurrent execution:
 - **Concurrency**: Max 3 subagents per turn, 15-minute timeout
 - **Execution**: Background thread pools with status tracking and SSE events
 - **Flow**: Agent calls `task()` tool → executor runs subagent in background → polls for completion → returns result
+- **Durable batch retries**: A bookkeeping error after child dispatch requests cancellation and waits for execution teardown before explicitly requeueing the item. The supervisor maintains its lease during this wait, bounded by one `subagent_batches.lease_seconds` interval. Lost/failed renewal, timeout or shutdown leaves recovery to the existing durable lease policy; batch side effects must still be idempotent. An outcome-storage error is not reclassified as an agent execution failure.
 
 ### Memory System
 
