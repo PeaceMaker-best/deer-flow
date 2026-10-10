@@ -574,6 +574,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         startup_config = get_app_config()
         from deerflow.config.subagent_batches_config import SubagentBatchesConfig
         from deerflow.config.subagent_runtime_config import SubagentRuntimeConfig
+        from deerflow.runtime.checkpointer.provider import warn_legacy_checkpointer_override
         from deerflow.subagents.capacity import configure_subagent_execution_capacity
 
         subagent_runtime_config = getattr(startup_config, "subagent_runtime", None)
@@ -584,6 +585,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             subagent_batches_config = SubagentBatchesConfig()
         configure_subagent_execution_capacity(subagent_runtime_config)
         configure_logging(startup_config)
+        warn_legacy_checkpointer_override(startup_config)
         ensure_browser_runtime_available(startup_config)
         logger.info("Configuration loaded successfully")
         warn_if_auth_disabled_enabled()

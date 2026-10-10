@@ -21,7 +21,7 @@ from deerflow.config.checkpointer_config import (
 )
 from deerflow.config.database_config import DatabaseConfig
 from deerflow.runtime.checkpointer import get_checkpointer, reset_checkpointer
-from deerflow.runtime.checkpointer.provider import POSTGRES_INSTALL
+from deerflow.runtime.checkpointer.provider import POSTGRES_INSTALL, warn_legacy_checkpointer_override
 from deerflow.runtime.store import get_store, reset_store
 from deerflow.runtime.store.provider import POSTGRES_STORE_INSTALL
 
@@ -991,6 +991,27 @@ class TestCheckpointerDatabaseConfig:
         resolved = factory.call_args.args[0]
         assert resolved.type == "memory"
         assert resolved.connection_string is None
+
+    def test_legacy_checkpointer_precedence_is_visible_at_startup(self, caplog):
+        app_config = SimpleNamespace(
+            checkpointer=CheckpointerConfig(type="sqlite", connection_string="checkpoints.db"),
+            database=DatabaseConfig(backend="sqlite", sqlite_dir=".deer-flow/data"),
+        )
+
+        caplog.set_level("WARNING", logger="deerflow.runtime.checkpointer.provider")
+        assert warn_legacy_checkpointer_override(app_config) is True
+        assert "takes precedence" in caplog.text
+        assert "checkpoints.db" in caplog.text
+        assert caplog.text.replace("\\", "/").endswith("Remove the legacy section to use the unified database configuration.\n")
+        assert ".deer-flow/data/deerflow.db" in caplog.text.replace("\\", "/")
+
+    def test_legacy_checkpointer_warning_is_skipped_without_unified_database(self):
+        app_config = SimpleNamespace(
+            checkpointer=CheckpointerConfig(type="memory"),
+            database=None,
+        )
+
+        assert warn_legacy_checkpointer_override(app_config) is False
 
     def test_explicit_memory_database_uses_in_memory_saver(self):
         """Explicit memory mode remains an intentional non-persistent checkpointer."""

@@ -79,6 +79,33 @@ def _resolve_checkpointer_config(app_config: AppConfig) -> CheckpointerConfig:
     raise ValueError(f"Unknown database backend: {database.backend!r}")
 
 
+def warn_legacy_checkpointer_override(app_config: AppConfig) -> bool:
+    """Warn when the deprecated checkpointer section wins over ``database``.
+
+    The legacy section remains supported for compatibility, but its precedence
+    is otherwise easy to miss on upgraded installations.  Keep the diagnostic
+    free of connection strings so a PostgreSQL password can never reach logs.
+    """
+    legacy = getattr(app_config, "checkpointer", None)
+    database = getattr(app_config, "database", None)
+    if legacy is None or database is None:
+        return False
+
+    legacy_target = legacy.type
+    if legacy.type == "sqlite":
+        legacy_target = f"sqlite ({legacy.connection_string or 'store.db'})"
+    unified_target = getattr(database, "backend", "unknown")
+    if unified_target == "sqlite":
+        unified_target = f"sqlite ({database.checkpointer_sqlite_path})"
+
+    logger.warning(
+        "Legacy 'checkpointer:' configuration takes precedence over 'database:' for LangGraph checkpoint state and Store (effective target: %s; database target: %s). Remove the legacy section to use the unified database configuration.",
+        legacy_target,
+        unified_target,
+    )
+    return True
+
+
 def _get_checkpointer_config() -> CheckpointerConfig:
     """Load checkpointer config without holding the provider singleton lock."""
     ensure_config_loaded()
