@@ -2528,6 +2528,17 @@ and objects, so parsing does not silently change its value.
 
 ## Embedded Python Client
 
+Async applications can use `await client.achat("hello", thread_id="my-thread")`.
+This executes the graph's native async model/tool path, not synchronous chat in a
+worker thread. Graph construction is offloaded; cancellation releases the turn's
+sandbox lease. For SQLite/Postgres or other async persistence, pass a caller-owned
+async saver, for example `async with make_checkpointer() as saver:` followed by
+`client = DeerFlowClient(checkpointer=saver)`. Keep that context open for all turns.
+Synchronous-only savers are rejected before async graph execution. This API returns
+final text; it does not add async streaming or change the synchronous event contract.
+Client initialization itself remains synchronous; inside an async application,
+offload it with `await asyncio.to_thread(DeerFlowClient, checkpointer=saver)`.
+
 For `DeerFlowClient(agent_name="researcher")`, the named agent's `mcp_plugins`
 selection applies to both the lead agent and its `task` / `batch_task`
 delegations: `null` inherits all enabled MCP plugins, `[]` selects none, and

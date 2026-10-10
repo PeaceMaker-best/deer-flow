@@ -22,6 +22,7 @@ import logging
 import mimetypes
 import os
 import tempfile
+import threading
 import uuid
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -69,7 +70,7 @@ from deerflow.skills.describe import build_skill_search_setup
 from deerflow.skills.storage import get_or_new_user_skill_storage
 from deerflow.subagents.capacity import configure_subagent_execution_capacity
 from deerflow.tools.builtins.tool_search import assemble_deferred_tools, build_mcp_routing_middleware, get_mcp_routing_hints_prompt_section
-from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, bind_trace_id, ensure_trace_id, generate_trace_id, get_current_trace_id, reset_trace_id
+from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, bind_trace_id, ensure_trace_context, ensure_trace_id, generate_trace_id, get_current_trace_id, reset_trace_id
 from deerflow.tracing import build_tracing_callbacks, inject_langfuse_metadata
 from deerflow.uploads.manager import (
     UnsafeUploadPathError,
@@ -269,6 +270,7 @@ class DeerFlowClient:
         self._middlewares = list(middlewares) if middlewares else []
         self._environment = environment
         self._thread_incarnations: dict[str, str] = {}
+        self._turn_setup_lock = threading.RLock()
 
         # Lazy agent — created on first call, recreated when config changes.
         self._agent = None
@@ -908,6 +910,87 @@ class DeerFlowClient:
             finally:
                 reset_trace_id(token)
 
+    def _prepare_turn(self, message: str, check_checkpoint_mode: bool, /, *, thread_id: str | None = None, **kwargs):
+        # Construction, storage and tracing setup stay off the async event loop.
+        # Capture the graph and its metadata together before another turn can
+        # switch the cached graph to a different effective user/model.
+        lock = getattr(self, "_turn_setup_lock", None)
+        if lock is None:
+            self._turn_setup_lock = lock = threading.RLock()
+        with lock:
+            thread_id = resolve_thread_id(thread_id)
+
+            config = self._get_runnable_config(thread_id, **kwargs)
+            inject_checkpoint_mode(config, self._checkpoint_channel_mode)
+            checkpoint_config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": "",
+                }
+            }
+            checkpointer = self._checkpointer
+            if checkpointer is None:
+                from deerflow.runtime.checkpointer import get_checkpointer
+
+                checkpointer = get_checkpointer()
+            if check_checkpoint_mode and checkpointer is not None:
+                ensure_checkpoint_mode_compatible(
+                    checkpointer,
+                    checkpoint_config,
+                    self._checkpoint_channel_mode,
+                )
+
+            # Inject tracing callbacks and Langfuse trace metadata at the graph
+            # invocation root so the embedded client matches the gateway worker's
+            # behaviour: a single ``stream()`` produces one trace with all node /
+            # LLM / tool calls nested under it, and the trace carries the reserved
+            # ``langfuse_session_id`` / ``langfuse_user_id`` keys that the Langfuse
+            # CallbackHandler lifts onto the root trace's ``sessionId`` / ``userId``.
+            tracing_callbacks = build_tracing_callbacks()
+            if tracing_callbacks:
+                existing_callbacks = list(config.get("callbacks") or [])
+                config["callbacks"] = [*existing_callbacks, *tracing_callbacks]
+
+            run_id = str(uuid.uuid4())
+            thread_incarnations = getattr(self, "_thread_incarnations", None)
+            if thread_incarnations is None:
+                thread_incarnations = self._thread_incarnations = {}
+            thread_incarnation = thread_incarnations.setdefault(thread_id, uuid.uuid4().hex)
+            context: dict[str, Any] = {
+                "thread_id": thread_id,
+                "run_id": run_id,
+                THREAD_INCARNATION_CONTEXT_KEY: thread_incarnation,
+            }
+            for key in _EMBEDDED_AUTHORIZATION_CONTEXT_KEYS:
+                if key in kwargs:
+                    context[key] = kwargs[key]
+
+            deerflow_trace_id = ensure_trace_id()
+            effective_user_id = context.get("user_id") or get_effective_user_id()
+            # Materialize the storage owner in runtime context in every auth mode.
+            # ContextVars normally propagate, but this explicit channel also
+            # survives worker/isolated-loop boundaries and matches the identity
+            # used by prompt assembly and the agent cache.
+            context["user_id"] = effective_user_id
+            self._ensure_agent(config, context=context)
+            configurable = config.get("configurable") or {}
+            effective_model_name = getattr(self, "_effective_model_name", None)
+            inject_langfuse_metadata(
+                config,
+                thread_id=thread_id,
+                user_id=effective_user_id,
+                assistant_id=self._agent_name or "lead-agent",
+                model_name=effective_model_name or configurable.get("model_name") or self._model_name,
+                environment=self._environment or os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
+                deerflow_trace_id=deerflow_trace_id,
+            )
+
+            state: dict[str, Any] = {"messages": [HumanMessage(content=message, additional_kwargs={"run_id": run_id})]}
+            context[DEERFLOW_TRACE_METADATA_KEY] = deerflow_trace_id
+            if self._agent_name:
+                context["agent_name"] = self._agent_name
+            return self._agent, state, config, context, checkpointer
+
     def _stream_turn(
         self,
         message: str,
@@ -997,77 +1080,8 @@ class DeerFlowClient:
               Tool results also include ``"artifact"`` when the source ToolMessage has a non-None artifact.
             - type="end"             data={"usage": {"input_tokens": int, "output_tokens": int, "total_tokens": int}}
         """
-        thread_id = resolve_thread_id(thread_id)
-
-        config = self._get_runnable_config(thread_id, **kwargs)
-        inject_checkpoint_mode(config, self._checkpoint_channel_mode)
-        checkpoint_config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "checkpoint_ns": "",
-            }
-        }
-        checkpointer = self._checkpointer
-        if checkpointer is None:
-            from deerflow.runtime.checkpointer import get_checkpointer
-
-            checkpointer = get_checkpointer()
-        if checkpointer is not None:
-            ensure_checkpoint_mode_compatible(
-                checkpointer,
-                checkpoint_config,
-                self._checkpoint_channel_mode,
-            )
-
-        # Inject tracing callbacks and Langfuse trace metadata at the graph
-        # invocation root so the embedded client matches the gateway worker's
-        # behaviour: a single ``stream()`` produces one trace with all node /
-        # LLM / tool calls nested under it, and the trace carries the reserved
-        # ``langfuse_session_id`` / ``langfuse_user_id`` keys that the Langfuse
-        # CallbackHandler lifts onto the root trace's ``sessionId`` / ``userId``.
-        tracing_callbacks = build_tracing_callbacks()
-        if tracing_callbacks:
-            existing_callbacks = list(config.get("callbacks") or [])
-            config["callbacks"] = [*existing_callbacks, *tracing_callbacks]
-
-        run_id = str(uuid.uuid4())
-        thread_incarnations = getattr(self, "_thread_incarnations", None)
-        if thread_incarnations is None:
-            thread_incarnations = self._thread_incarnations = {}
-        thread_incarnation = thread_incarnations.setdefault(thread_id, uuid.uuid4().hex)
-        context: dict[str, Any] = {
-            "thread_id": thread_id,
-            "run_id": run_id,
-            THREAD_INCARNATION_CONTEXT_KEY: thread_incarnation,
-        }
-        for key in _EMBEDDED_AUTHORIZATION_CONTEXT_KEYS:
-            if key in kwargs:
-                context[key] = kwargs[key]
-
-        deerflow_trace_id = ensure_trace_id()
-        effective_user_id = context.get("user_id") or get_effective_user_id()
-        # Materialize the storage owner in runtime context in every auth mode.
-        # ContextVars normally propagate, but this explicit channel also
-        # survives worker/isolated-loop boundaries and matches the identity
-        # used by prompt assembly and the agent cache.
-        context["user_id"] = effective_user_id
-        self._ensure_agent(config, context=context)
-        configurable = config.get("configurable") or {}
-        effective_model_name = getattr(self, "_effective_model_name", None)
-        inject_langfuse_metadata(
-            config,
-            thread_id=thread_id,
-            user_id=effective_user_id,
-            assistant_id=self._agent_name or "lead-agent",
-            model_name=effective_model_name or configurable.get("model_name") or self._model_name,
-            environment=self._environment or os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
-            deerflow_trace_id=deerflow_trace_id,
-        )
-
-        state: dict[str, Any] = {"messages": [HumanMessage(content=message, additional_kwargs={"run_id": run_id})]}
-        context[DEERFLOW_TRACE_METADATA_KEY] = deerflow_trace_id
-        if self._agent_name:
-            context["agent_name"] = self._agent_name
+        agent, state, config, context, _checkpointer = self._prepare_turn(message, True, thread_id=thread_id, **kwargs)
+        run_id = context["run_id"]
 
         # Last message object seen per id in ``values`` snapshots. A later node,
         # such as a guard's ``after_model``, can replace a message under the same
@@ -1134,7 +1148,7 @@ class DeerFlowClient:
             sent.update(delta)
             return delta
 
-        agent_items = self._agent.stream(
+        agent_items = agent.stream(
             state,
             config=config,
             context=context,
@@ -1300,6 +1314,53 @@ class DeerFlowClient:
             )
 
         yield StreamEvent(type="end", data={"usage": cumulative_usage})
+
+    async def achat(self, message: str, *, thread_id: str | None = None, **kwargs) -> str:
+        """Await a native graph turn and return its last non-empty AI text.
+
+        Unlike a threaded wrapper around chat(), this runs async model/tools
+        through graph.ainvoke(). Only blocking turn construction is offloaded.
+        Persistent savers must implement the native async checkpoint methods;
+        callers own their lifetime (for example, async with make_checkpointer()).
+        The synchronous stream/chat APIs and their event contract are unchanged.
+        """
+        from deerflow.runtime.checkpoint_mode import aensure_checkpoint_mode_compatible
+        from deerflow.sandbox.lease import release_sandbox_execution_lease_async, run_sync_lifecycle_operation
+
+        kwargs = dict(kwargs)
+        kwargs.setdefault("user_id", get_effective_user_id())
+        context: dict[str, Any] = {}
+        with ensure_trace_context():
+            try:
+                agent, state, config, context, checkpointer = await run_sync_lifecycle_operation(self._prepare_turn, message, False, thread_id=thread_id, **kwargs)
+                historical_ids: set[str] = set()
+                if checkpointer is not None:
+                    checkpoint_config = {"configurable": {"thread_id": context["thread_id"], "checkpoint_ns": ""}}
+                    try:
+                        await aensure_checkpoint_mode_compatible(checkpointer, checkpoint_config, self._checkpoint_channel_mode)
+                        snapshot = await agent.aget_state(config)
+                    except NotImplementedError as exc:
+                        raise ValueError("achat requires an async-capable checkpointer; pass a saver from make_checkpointer()") from exc
+                    historical_ids = {msg.id for msg in snapshot.values.get("messages", []) if isinstance(msg, AIMessage) and msg.id}
+                result = await agent.ainvoke(state, config=config, context=context)
+                messages = result.get("messages", [])
+                current_user_index = next(
+                    (index for index, msg in enumerate(messages) if isinstance(msg, HumanMessage) and (getattr(msg, "additional_kwargs", None) or {}).get("run_id") == context["run_id"]),
+                    None,
+                )
+                current_messages = messages[current_user_index + 1 :] if current_user_index is not None else messages
+                for msg in reversed(current_messages):
+                    if isinstance(msg, AIMessage) and (not msg.id or msg.id not in historical_ids):
+                        text = self._extract_text(msg.content)
+                        if text:
+                            return text
+                return ""
+            finally:
+                if context:
+                    try:
+                        await release_sandbox_execution_lease_async(context)
+                    except Exception:
+                        logger.warning("Failed to release embedded sandbox execution lease", exc_info=True)
 
     def chat(self, message: str, *, thread_id: str | None = None, **kwargs) -> str:
         """Send a message and return the final text response.
