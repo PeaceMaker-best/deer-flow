@@ -389,9 +389,11 @@ class TestRegistryCustomAgentLookup:
 
         monkeypatch.setattr(registry_module, "is_host_bash_allowed", fake_is_host_bash_allowed)
 
-        get_available_subagent_names(app_config=SubagentsAppConfig())
+        app_config = SubagentsAppConfig()
 
-        assert captured["args"] == ()
+        get_available_subagent_names(app_config=app_config)
+
+        assert captured["args"] == (app_config,)
 
     def test_builtin_takes_priority_over_custom(self):
         """If a custom agent has the same name as a builtin, builtin wins."""

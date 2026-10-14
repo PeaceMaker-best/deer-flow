@@ -807,7 +807,7 @@ async def task_tool(
     # Preserve the dedicated sandbox-policy guidance before the generic
     # registry/policy membership gate filters bash from the visible catalog.
     if subagent_type == "bash":
-        host_bash_allowed = is_host_bash_allowed(runtime_app_config) if runtime_app_config is not None else is_host_bash_allowed()
+        host_bash_allowed = is_host_bash_allowed(runtime_app_config)
         if not host_bash_allowed:
             return _task_result_command(
                 tool_call_id=tool_call_id,

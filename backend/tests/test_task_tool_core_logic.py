@@ -802,7 +802,7 @@ def test_task_tool_rejects_non_mapping_attributes(monkeypatch):
 def test_task_tool_rejects_bash_subagent_when_host_bash_disabled(monkeypatch):
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: _make_subagent_config())
     monkeypatch.setattr(task_tool_module, "get_available_subagent_names", lambda: ["general-purpose"])
-    monkeypatch.setattr(task_tool_module, "is_host_bash_allowed", lambda: False)
+    monkeypatch.setattr(task_tool_module, "is_host_bash_allowed", lambda config: False)
 
     result = _run_task_tool(
         runtime=_make_runtime(),
@@ -1044,7 +1044,7 @@ def test_rejected_task_does_not_capture_parent_history(monkeypatch, context_mode
         runtime.config["metadata"]["allowed_subagents"] = []
     monkeypatch.setattr(task_tool_module, "get_available_subagent_names", lambda **kwargs: [] if rejection == "caller-policy" else ["general-purpose"])
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: None if rejection == "unknown" else _make_subagent_config())
-    monkeypatch.setattr(task_tool_module, "is_host_bash_allowed", lambda: False)
+    monkeypatch.setattr(task_tool_module, "is_host_bash_allowed", lambda config: False)
     capture = MagicMock(wraps=task_tool_module.ParentContextSnapshot.from_state)
     monkeypatch.setattr(task_tool_module.ParentContextSnapshot, "from_state", capture)
     executor = MagicMock()
