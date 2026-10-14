@@ -34,7 +34,7 @@ def uses_local_sandbox_provider(config=None) -> bool:
 
 def is_host_bash_allowed(config=None) -> bool:
     """Return whether host bash execution is explicitly allowed."""
-    if config is None:
+    if config is None or not hasattr(config, "sandbox"):
         config = get_app_config()
 
     sandbox_cfg = getattr(config, "sandbox", None)
