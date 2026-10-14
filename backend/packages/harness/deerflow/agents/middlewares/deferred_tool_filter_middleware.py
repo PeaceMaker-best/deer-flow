@@ -2,9 +2,9 @@
 
 When tool_search is enabled, MCP tools are still passed to ToolNode for
 execution, but their schemas must NOT be sent to the LLM via bind_tools until
-the model has discovered them via tool_search. This middleware removes the
-still-deferred tools from request.tools before model binding, and blocks tool
-calls to tools that have not been promoted yet.
+the model has discovered them via tool_search in the current agent invocation.
+This middleware removes the still-deferred tools from request.tools before
+model binding, and blocks tool calls to tools that have not been promoted yet.
 
 The deferred name set and the catalog hash are injected at construction time
 (no ContextVar). Promotion state is read from graph state (``state["promoted"]``),
@@ -21,6 +21,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,9 @@ class DeferredToolFilterMiddleware(AgentMiddleware[AgentState]):
 
     ToolNode still holds all tools (including deferred) for execution routing,
     but the LLM only sees active tool schemas plus tools that have already been
-    promoted (recorded in ``state["promoted"]`` under the current catalog hash).
+    promoted during the current agent invocation (recorded in
+    ``state["promoted"]`` under the current catalog hash). Promotions are reset
+    before the next invocation so historical schemas do not consume context.
     """
 
     def __init__(self, deferred_names: frozenset[str], catalog_hash: str | None):
@@ -43,8 +46,27 @@ class DeferredToolFilterMiddleware(AgentMiddleware[AgentState]):
         return {
             "deferred_names": sorted(self._deferred),
             "catalog_hash": self._catalog_hash,
-            "promotion_scope": "graph_state_catalog_hash",
+            "promotion_scope": "agent_invocation_catalog_hash",
         }
+
+    def _reset_promoted(self) -> dict[str, object] | None:
+        if not self._deferred or self._catalog_hash is None:
+            return None
+        return {
+            "promoted": {
+                "catalog_hash": self._catalog_hash,
+                "names": [],
+                "reset": True,
+            }
+        }
+
+    @override
+    def before_agent(self, state: AgentState, runtime: Runtime) -> dict[str, object] | None:
+        return self._reset_promoted()
+
+    @override
+    async def abefore_agent(self, state: AgentState, runtime: Runtime) -> dict[str, object] | None:
+        return self._reset_promoted()
 
     def _promoted(self, state) -> set[str]:
         promoted = (state or {}).get("promoted")

@@ -159,19 +159,21 @@ def merge_goal(existing: GoalState | None, new: GoalState | None) -> GoalState |
 class PromotedTools(TypedDict):
     catalog_hash: str
     names: list[str]
+    reset: NotRequired[bool]
 
 
 def merge_promoted(existing: PromotedTools | None, new: PromotedTools | None) -> PromotedTools | None:
     """Reducer for deferred-tool promotions, scoped by catalog hash.
 
     - new None/empty -> preserve existing (node didn't touch promotions).
+    - explicit reset -> replace names for a new agent invocation.
     - catalog_hash changed -> replace wholesale, dropping stale names (prevents a
       persisted bare name from exposing a different tool after catalog drift).
     - same catalog_hash -> union names, dedupe, preserve order.
     """
     if not new:
         return existing
-    if existing is None or existing.get("catalog_hash") != new["catalog_hash"]:
+    if new.get("reset") or existing is None or existing.get("catalog_hash") != new["catalog_hash"]:
         return {
             "catalog_hash": new["catalog_hash"],
             "names": list(dict.fromkeys(new["names"])),

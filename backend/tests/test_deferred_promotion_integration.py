@@ -16,6 +16,7 @@ from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool as as_tool
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deerflow.agents.middlewares.deferred_tool_filter_middleware import DeferredToolFilterMiddleware
 from deerflow.agents.thread_state import ThreadState
@@ -71,3 +72,39 @@ def test_tool_search_promotes_into_next_turn():
     assert "mcp_other" not in bound[1]
     # Promotion recorded in graph state, scoped by catalog hash.
     assert result["promoted"] == {"catalog_hash": setup.catalog_hash, "names": ["mcp_calc"]}
+
+
+def test_promoted_schema_is_deferred_again_on_next_user_turn():
+    bound: list[list[str]] = []
+
+    class RecordingModel(GenericFakeChatModel):
+        def bind_tools(self, tools, **kwargs):
+            bound.append([getattr(t, "name", None) for t in tools])
+            return self
+
+    setup = build_deferred_tool_setup([active_tool, tag_mcp_tool(mcp_calc), tag_mcp_tool(mcp_other)], enabled=True)
+    model = RecordingModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "tool_search", "args": {"query": "select:mcp_calc"}, "id": "c1", "type": "tool_call"}]),
+                AIMessage(content="first turn done"),
+                AIMessage(content="second turn done"),
+            ]
+        )
+    )
+    graph = create_agent(
+        model=model,
+        tools=[active_tool, mcp_calc, mcp_other, setup.tool_search_tool],
+        middleware=[DeferredToolFilterMiddleware(setup.deferred_names, setup.catalog_hash)],
+        state_schema=ThreadState,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "deferred-tool-turn-scope"}}
+
+    graph.invoke({"messages": [HumanMessage(content="use the deferred calculator")]}, config)
+    graph.invoke({"messages": [HumanMessage(content="now answer without it")]}, config)
+
+    assert len(bound) == 3
+    assert "mcp_calc" not in bound[0]
+    assert "mcp_calc" in bound[1]
+    assert "mcp_calc" not in bound[2]

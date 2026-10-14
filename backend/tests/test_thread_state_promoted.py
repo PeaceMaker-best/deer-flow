@@ -27,6 +27,14 @@ def test_merge_promoted_replaces_when_catalog_hash_changes():
     assert result == {"catalog_hash": "def", "names": ["new", "old"]}
 
 
+def test_merge_promoted_explicit_reset_replaces_matching_catalog_names():
+    existing = {"catalog_hash": "abc", "names": ["search", "fetch"]}
+
+    result = merge_promoted(existing, {"catalog_hash": "abc", "names": [], "reset": True})
+
+    assert result == {"catalog_hash": "abc", "names": []}
+
+
 def test_merge_promoted_unions_names_when_catalog_hash_matches():
     existing = {"catalog_hash": "abc", "names": ["search", "fetch"]}
 
