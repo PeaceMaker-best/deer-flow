@@ -301,3 +301,11 @@ def test_view_image_rejects_uploads_symlink_escape(tmp_path: Path) -> None:
 
     assert "path traversal" in _message_content(result)
     assert "viewed_images" not in result.update
+
+
+def test_view_image_description_distinguishes_visual_inspection_from_delivery() -> None:
+    description = view_image_tool.description
+
+    assert "visual interpretation" in description
+    assert "Do not use this tool to present or deliver an image to the user" in description
+    assert "present_files" in description
