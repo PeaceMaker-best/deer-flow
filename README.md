@@ -2216,6 +2216,8 @@ Advanced deployments can enable pluggable authorization with `authorization.enab
 
 Follow-up suggestions also check `model:use` before calling the selected model, including the default model when no name is supplied. A denied model returns HTTP 403 without an LLM call; authorization-provider failures follow the configured `fail_closed` policy.
 
+`view_image` lets the model inspect image contents; it does not publish an image to the user. To make a generated image available for preview or download, save it under `/mnt/user-data/outputs` and call `present_files` with that path.
+
 For vision-capable agents, `view_image` and the subsequent model-context image read also require `sandbox:execute`. Allowing the tool name alone does not grant image-file access; a role denied sandbox execution cannot reread previously recorded image metadata after its permissions change. External run input and thread-state updates cannot set `viewed_images` or `thread_data`; when a saved image is read from a host copy, its path must resolve to the current user's thread and the recorded virtual image path.
 Each model request includes at most four recently viewed images and 28 MiB of base64 image data. Images excluded by these limits are reported as omitted; the agent can call `view_image` again to bring one back into context.
 
