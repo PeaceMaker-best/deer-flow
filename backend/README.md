@@ -584,6 +584,7 @@ reachability.
 
 ## Documentation
 
+- [Offline Agent tool-result evidence checks](scripts/benchmark/run_tool_evidence.md)
 - [Configuration Guide](docs/CONFIGURATION.md)
 - [Architecture Details](docs/ARCHITECTURE.md)
 - [API Reference](docs/API.md)

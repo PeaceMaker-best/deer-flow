@@ -40,6 +40,9 @@ Image result URL policy: [image search guide](packages/harness/deerflow/communit
 
 ### Backend Benchmarks
 
+Offline tool-evidence checks reuse the event catalog and terminal protocol:
+[contract](scripts/benchmark/run_tool_evidence.md).
+
 `scripts/benchmark/context_snapshot/`: explicit `run-live` needs provider env
 vars; `summarize` and pytest are offline. See its README for the protocol.
 
