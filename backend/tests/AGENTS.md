@@ -520,3 +520,7 @@ cases in `test_support_bundle.py` run the real block; harnesses that copy
 async outbound callback before sending the next inbound message. Keep the real
 worker-pool concurrency, preserve per-turn artifact assertions, and stop the
 manager in `finally` so a failure cannot leave tasks using a closed test loop.
+
+Checkpoint-recovery tests kill real subprocesses at handshake boundaries; keep
+the SDK graph, SQLite and effect ledger real. The uncommitted-effect control
+expects a duplicate. Reap children before deleting temporary storage.

@@ -40,8 +40,8 @@ Image result URL policy: [image search guide](packages/harness/deerflow/communit
 
 ### Backend Benchmarks
 
-`scripts/benchmark/context_snapshot/`: explicit `run-live` needs provider env
-vars; `summarize` and pytest are offline. See its README for the protocol.
+`scripts/benchmark/context_snapshot/`: `run-live` needs provider env vars;
+`summarize`/pytest and `checkpoint_recovery/` are offline. See their READMEs.
 
 Benchmarks in `scripts/benchmark/` must be standalone and reproducible. Import
 production functions; never duplicate them or introduce an alternative runtime.

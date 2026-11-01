@@ -4068,6 +4068,11 @@ immediately after starting any deployment that is not loopback-only.
 
 ## Contributing
 
+An [offline SDK recovery matrix](backend/scripts/benchmark/checkpoint_recovery/README.md)
+measures fresh-process checkpoint recovery and duplicate tool effects at two
+controlled crash boundaries. It needs no model API or GPU and reports synthetic
+observations separately from task-quality or exactly-once guarantees.
+
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, workflow, and guidelines.
 
 Backend `make test` runs four duration-balanced shards concurrently and reports
