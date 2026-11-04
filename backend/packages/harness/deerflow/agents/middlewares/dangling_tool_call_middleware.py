@@ -137,12 +137,17 @@ def _has_invalid_tool_name(name: object) -> bool:
     return not _valid_tool_name(name)
 
 
+def _reject_json_constant(value: str) -> None:
+    """Reject Python's permissive NaN/Infinity extensions at the provider boundary."""
+    raise ValueError(f"Non-JSON numeric constant: {value}")
+
+
 def _parse_json_object(value: object) -> dict | None:
     """Parse a JSON-object string, returning None for other inputs."""
     if not isinstance(value, str):
         return None
     try:
-        parsed = json.loads(value)
+        parsed = json.loads(value, parse_constant=_reject_json_constant)
     except (ValueError, RecursionError):
         return None
     return parsed if isinstance(parsed, dict) else None
@@ -291,6 +296,14 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
                 normalized_name = _normalize_tool_name(name)
                 if sanitized.get("name") != normalized_name:
                     sanitized["name"] = normalized_name
+                    structured_changed = True
+                # LangChain's permissive parser can promote NaN/Infinity from a
+                # raw payload into structured calls. Those still fail strict
+                # provider replay, even after the tool has returned a result.
+                try:
+                    json.dumps(sanitized.get("args"), allow_nan=False)
+                except (TypeError, ValueError, RecursionError):
+                    sanitized["args"] = {}
                     structured_changed = True
                 sanitized_tool_calls.append(sanitized)
             if structured_changed:

@@ -1,5 +1,9 @@
 ### Middleware Chain
 
+Historical tool-call arguments, including parsed calls, must exclude Python's
+NaN/Infinity extensions before provider serialization. Repair only the request
+projection; preserve canonical history, tool results and valid argument strings.
+
 Tool-result JSON analysis is best-effort: parser depth failures must preserve the
 original content and must not abort the graph. Explicit error results fall back
 to `unknown` / recoverable / `try_alternative`, without classifying incidental
