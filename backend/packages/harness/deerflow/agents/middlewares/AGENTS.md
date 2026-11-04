@@ -69,6 +69,10 @@ not abort compaction/model calls.
 `tool_calls` update: adapters resend stale `content` tool-call blocks, which
 strict providers reject.
 
+Missing tool-call IDs are repaired against all visible call/result IDs across
+the request. Generated prefixes are not reserved provider namespaces; collision
+retries must be deterministic and preserve existing result ownership.
+
 Read marks bind to request `tool_call_id`, including `Command` results.
 No match: skip inspection, log ID. Tests: `test_read_mark_tool_call_correlation.py`.
 

@@ -69,11 +69,11 @@ def _names_can_pair(call_name: object, result_name: object) -> bool:
     return call_name.strip() == result_name.strip()
 
 
-def _relabel_tool_call_ids(tool_calls: list, msg_index: int, source: str) -> tuple[list, list[dict], bool]:
+def _relabel_tool_call_ids(tool_calls: list, msg_index: int, source: str, reserved_ids: set[str]) -> tuple[list, list[dict], bool]:
     """Replace malformed ids in one tool-call list with stable synthetic ids.
 
-    The id is derived from the call's position so both the pairing pass and the
-    model-bound message agree on it without threading state between them.
+    Start from the call's position, then avoid every existing transcript id so
+    recovery cannot alias a provider-owned call or consume an orphan result.
 
     Returns the rewritten list, one ``{original, synthetic, name}`` claim entry per
     relabelled call, and whether anything changed.
@@ -85,7 +85,13 @@ def _relabel_tool_call_ids(tool_calls: list, msg_index: int, source: str) -> tup
         if not isinstance(tool_call, dict) or _valid_tool_call_id(tool_call.get("id")):
             relabeled.append(tool_call)
             continue
-        synthetic = f"{_SYNTHETIC_TOOL_CALL_ID_PREFIX}{msg_index}_{source}_{position}"
+        candidate = f"{_SYNTHETIC_TOOL_CALL_ID_PREFIX}{msg_index}_{source}_{position}"
+        synthetic = candidate
+        suffix = 0
+        while synthetic in reserved_ids:
+            suffix += 1
+            synthetic = f"{candidate}_{suffix}"
+        reserved_ids.add(synthetic)
         relabeled.append({**tool_call, "id": synthetic})
         changed = True
         assigned.append({"original": tool_call.get("id"), "synthetic": synthetic, "name": _tool_call_name(tool_call)})
@@ -360,6 +366,18 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         return msg.model_copy(update=update)
 
     @staticmethod
+    def _tool_call_id_sources(msg) -> list[tuple[str, list, str]]:
+        structured = getattr(msg, "tool_calls", None) or []
+        invalid = getattr(msg, "invalid_tool_calls", None) or []
+        sources = [("call", structured, "tool_calls"), ("invalid", invalid, "invalid_tool_calls")]
+        # The raw payload is a shadowed view unless both parsed views are empty,
+        # matching the provider serializer and _message_tool_calls.
+        raw = (getattr(msg, "additional_kwargs", None) or {}).get("tool_calls")
+        if not structured and not invalid and isinstance(raw, list):
+            sources.append(("raw", raw, "additional_kwargs"))
+        return sources
+
+    @staticmethod
     def _normalize_tool_call_ids(messages: list) -> list:
         """Return messages with malformed tool-call ids replaced by synthetic ids.
 
@@ -380,29 +398,21 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         # lets position break a tie between otherwise indistinguishable siblings.
         positional = False
 
+        # Synthetic prefixes are not a reserved provider namespace. Include
+        # later turns and orphan results: the pairing pass indexes the entire
+        # transcript, so a collision could otherwise consume another result.
+        reserved_ids = {
+            call["id"] for msg in messages if getattr(msg, "type", None) == "ai" for _, calls, _ in DanglingToolCallMiddleware._tool_call_id_sources(msg) for call in calls if isinstance(call, dict) and _valid_tool_call_id(call.get("id"))
+        }
+        reserved_ids.update(msg.tool_call_id for msg in messages if isinstance(msg, ToolMessage) and _valid_tool_call_id(msg.tool_call_id))
+
         for index, msg in enumerate(messages):
             if getattr(msg, "type", None) == "ai":
                 update: dict = {}
                 assigned: list[dict] = []
-                structured = getattr(msg, "tool_calls", None) or []
                 additional_kwargs = getattr(msg, "additional_kwargs", None) or {}
-                raw_tool_calls = additional_kwargs.get("tool_calls")
-
-                invalid = getattr(msg, "invalid_tool_calls", None) or []
-                sources: list[tuple[str, list, str]] = [
-                    ("call", structured, "tool_calls"),
-                    ("invalid", invalid, "invalid_tool_calls"),
-                ]
-                # The raw payload is a fallback view of the same calls, so relabel it only when
-                # it is the view actually serialized: the OpenAI serializer reaches for it only
-                # once *both* structured views are empty. Minting an id for a shadowed raw view
-                # would owe a placeholder to a call the provider never sees, putting an orphan
-                # tool result on the wire.
-                if not structured and not invalid and isinstance(raw_tool_calls, list):
-                    sources.append(("raw", raw_tool_calls, "additional_kwargs"))
-
-                for source, tool_calls, field in sources:
-                    relabeled, source_assigned, changed = _relabel_tool_call_ids(tool_calls, index, source)
+                for source, tool_calls, field in DanglingToolCallMiddleware._tool_call_id_sources(msg):
+                    relabeled, source_assigned, changed = _relabel_tool_call_ids(tool_calls, index, source, reserved_ids)
                     assigned.extend(source_assigned)
                     if not changed:
                         continue
