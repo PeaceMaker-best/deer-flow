@@ -234,12 +234,10 @@ class _AsyncWaiter:
     ``granted`` is flipped to ``True`` (under the limiter lock) at the exact
     moment a permit is reserved for this waiter - by ``release`` handing off a
     returning permit, or by another cancelling waiter handing off its reserved
-    permit. The reservation is atomic with the dequeue, so the invariant
-    ``granted is True  <=>  not in _async_waiters`` always holds: once granted,
-    the permit is already counted in ``_in_flight`` and the waiter need only
-    wake and return. A cancelled waiter therefore knows from ``granted``
-    whether it owes a handoff (granted) or is merely unregistering (not yet
-    granted).
+    permit. A granted waiter remains in ``_pending_grants`` until it actually
+    resumes and takes ownership. That distinction lets another caller reclaim
+    an undeliverable reservation if the recipient loop closes after accepting
+    the wakeup. Calls that have already acquired are never reclaimed this way.
     """
 
     __slots__ = ("loop", "event", "granted")
@@ -269,8 +267,12 @@ class _ProcessWideLimiter:
     touch the cap. Permits are released in a ``finally`` and an async waiter
     that is cancelled after its permit was reserved hands the reservation to
     the next waiter, so capacity never leaks and a cancellation never strands
-    a later waiter.
+    a later waiter. Saturated callers periodically reclaim pending grants from
+    closed loops: call_soon_threadsafe can succeed just before loop.close()
+    discards the callback. A stopped but open loop still owns its reservation.
     """
+
+    _CLOSED_LOOP_CHECK_INTERVAL = 0.1
 
     def __init__(self, limit: int) -> None:
         self._lock = threading.Lock()
@@ -281,6 +283,7 @@ class _ProcessWideLimiter:
         # caller's loop; release/handoff wakes one across loops via
         # call_soon_threadsafe so the wakeup runs on the right loop.
         self._async_waiters: deque[_AsyncWaiter] = deque()
+        self._pending_grants: set[_AsyncWaiter] = set()
 
     @property
     def limit(self) -> int:
@@ -294,7 +297,7 @@ class _ProcessWideLimiter:
         """Block the calling thread until a permit is available, then take one."""
         with self._cond:
             while not self._try_acquire_locked():
-                self._cond.wait()
+                self._cond.wait(timeout=self._CLOSED_LOOP_CHECK_INTERVAL)
 
     def release(self) -> None:
         """Return one permit, handing it to a waiter if one is queued.
@@ -306,23 +309,13 @@ class _ProcessWideLimiter:
         it on its next ``_try_acquire_locked`` re-check.
         """
         with self._cond:
-            if self._async_waiters:
-                waiter = self._async_waiters.popleft()
-                waiter.granted = True
-                if not self._wake_locked(waiter):
-                    # Owner loop closed: the transferred permit is stranded;
-                    # hand it to the next waiter or free it.
-                    self._handoff_granted_permit_locked()
-                return
-            if self._in_flight > 0:
-                self._in_flight -= 1
-            self._cond.notify()
+            self._handoff_granted_permit_locked()
 
     async def acquire_async(self) -> None:
         """Acquire a permit without blocking the event loop.
 
         Free capacity -> take one immediately. Otherwise park on an
-        ``asyncio.Event``; ``release`` / a cap-raise transfers a permit to us
+        ``asyncio.Event``; ``release`` transfers a permit to us
         (``granted=True``) and sets the event. On cancellation, if a permit was
         already reserved for us, hand it to the next waiter (or free it) so the
         reservation is never lost; if we were still queued (not yet granted),
@@ -344,26 +337,44 @@ class _ProcessWideLimiter:
                     )
                 self._async_waiters.append(waiter)
             try:
-                await waiter.event.wait()
-            except asyncio.CancelledError:
+                while not waiter.event.is_set():
+                    try:
+                        async with asyncio.timeout(self._CLOSED_LOOP_CHECK_INTERVAL):
+                            await waiter.event.wait()
+                    except TimeoutError:
+                        with self._cond:
+                            self._reclaim_closed_grants_locked()
                 with self._cond:
-                    if waiter.granted:
+                    self._pending_grants.remove(waiter)
+                return  # Acknowledged: the caller now owns the counted permit.
+            except BaseException:
+                with self._cond:
+                    if waiter in self._pending_grants:
                         # A permit was reserved for us but we're cancelling
                         # before waking. Pass the reservation to the next
                         # waiter (or free it) so it is not stranded.
+                        self._pending_grants.remove(waiter)
+                        waiter.granted = False
                         self._handoff_granted_permit_locked()
-                    else:
-                        # Still queued, never granted (granted is set only when
-                        # dequeued, under the lock): just unregister.
+                    elif waiter in self._async_waiters:
                         self._async_waiters.remove(waiter)
+                    # Otherwise another loop already reclaimed the grant.
                 raise
-            return  # woken => granted => we own a permit (already in _in_flight)
 
     def _try_acquire_locked(self) -> bool:
+        self._reclaim_closed_grants_locked()
         if self._in_flight < self._limit:
             self._in_flight += 1
             return True
         return False
+
+    def _reclaim_closed_grants_locked(self) -> None:
+        """Recover only unacknowledged grants whose loops cannot run again."""
+        for waiter in tuple(self._pending_grants):
+            if waiter.loop.is_closed():
+                self._pending_grants.remove(waiter)
+                waiter.granted = False
+                self._handoff_granted_permit_locked()
 
     def _handoff_granted_permit_locked(self) -> None:
         """Transfer an already-reserved permit to the next queued waiter, or free it.
@@ -376,9 +387,14 @@ class _ProcessWideLimiter:
         """
         while self._async_waiters:
             waiter = self._async_waiters.popleft()
+            if waiter.loop.is_closed():
+                continue
             waiter.granted = True
+            self._pending_grants.add(waiter)
             if self._wake_locked(waiter):
                 return  # ownership transferred; _in_flight unchanged
+            self._pending_grants.remove(waiter)
+            waiter.granted = False
             # dead loop; try the next waiter
         # No async waiter to take it: free the permit and wake a sync waiter.
         if self._in_flight > 0:
