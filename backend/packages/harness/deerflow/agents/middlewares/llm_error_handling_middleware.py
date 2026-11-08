@@ -25,7 +25,7 @@ from langgraph.errors import GraphBubbleUp
 
 from deerflow.agents.middlewares.model_response import append_visible_text, finish_reason, has_tool_call_intent, has_visible_content, last_ai_message
 from deerflow.config.app_config import AppConfig
-from deerflow.models.request_admission import AdmissionError
+from deerflow.models.request_admission import AdmissionError, RequestAdmission
 from deerflow.utils.custom_events import aemit_custom_event, emit_custom_event
 from deerflow.utils.retry_after import bounded_retry_after_ms, parse_retry_after_date_ms
 
@@ -969,6 +969,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 self._release_half_open_probe(admission=admission)
                 raise
             except Exception as exc:
+                _share_rate_limit_cooldown(request, exc)
                 retriable, reason = self._classify_error(exc)
                 max_attempts = self._max_attempts_for(exc, reason)
                 should_retry = retriable and attempt < max_attempts
@@ -1034,6 +1035,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     self._release_half_open_probe(admission=admission)
                     raise
                 except Exception as exc:
+                    _share_rate_limit_cooldown(request, exc)
                     retriable, reason = self._classify_error(exc)
                     max_attempts = self._max_attempts_for(exc, reason)
                     should_retry = retriable and attempt < max_attempts
@@ -1156,6 +1158,24 @@ def _as_http_status(value: Any) -> int | None:
 def _normalize_separators(text: str) -> str:
     """Lower-case ``text`` and replace each run of ``_``, ``-`` and whitespace with one space."""
     return _SEPARATOR_RUN_RE.sub(" ", text.lower())
+
+
+def _share_rate_limit_cooldown(request: ModelRequest, exc: BaseException) -> None:
+    """Let an opted-in quota group observe a provider's HTTP 429 cooldown.
+
+    Publish even on the last attempt: peers still need the provider's hint.
+    This best-effort bookkeeping must not replace the original error outcome.
+    """
+    if _extract_status_code(exc) != 429:
+        return
+    try:
+        limiter = getattr(getattr(request, "model", None), "rate_limiter", None)
+        if isinstance(limiter, RequestAdmission):
+            wait_ms = _extract_retry_after_ms(exc)
+            if wait_ms is not None:
+                limiter.defer_for(wait_ms / 1000)
+    except Exception:
+        logger.debug("Could not share provider cooldown with model admission")
 
 
 def _extract_retry_after_ms(exc: BaseException) -> int | None:

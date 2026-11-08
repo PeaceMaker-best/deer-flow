@@ -82,6 +82,16 @@ BaseChatModel invoke/stream hooks. Restart the Gateway after changing,
 disabling or regrouping active policies; conflicting settings fail model
 construction instead of resetting a live budget.
 
+When Agent middleware receives an HTTP 429 with a valid numeric or HTTP-date
+`Retry-After` (or `retry-after-ms`) of up to 24 hours, the admission group pauses
+new dispatches for that duration. This also applies when the failing call has
+exhausted its own retry budget. A later, shorter hint cannot shorten the pause.
+FIFO ordering, cancellation, queue capacity and `max_wait_seconds` still apply;
+a caller can therefore time out before the provider's cooldown ends. Already
+dispatched calls continue, and independent groups are unaffected. Missing or
+invalid hints and statuses other than HTTP 429 do not pause peers. Calls outside
+Agent middleware do not publish cooldown feedback.
+
 When enabled, exposed SDK `max_retries` settings are set to zero: SDK retries
 would bypass the admission hook. Claude and Codex also set their provider-internal
 `retry_max_attempts` to one, regardless of config or caller overrides, and log a

@@ -218,6 +218,8 @@ Enabling it disables exposed SDK retries and the Claude and Codex adapters'
 internal retry loops so middleware retries pass through request admission again.
 Middleware retries also cover HTTP 529 overload responses.
 A warning identifies `retry_max_attempts` values overridden by admission.
+When an admitted model receives HTTP 429 with a valid `Retry-After`, new
+requests in the same process-local quota group also wait for that cooldown.
 
 For Google's official Gemini OpenAI-compatible endpoint, use the
 [Gemini reasoning profile](backend/docs/CONFIGURATION.md#gemini-via-googles-openai-compatible-endpoint).

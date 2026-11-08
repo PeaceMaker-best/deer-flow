@@ -6,6 +6,7 @@ Requests are evenly spaced; idle time never accumulates a burst allowance.
 """
 
 import asyncio
+import math
 import threading
 import time
 from collections import deque
@@ -38,6 +39,17 @@ class RequestAdmission(BaseRateLimiter):
             self._next = now + self._interval
             return True
 
+    def defer_for(self, seconds: float) -> None:
+        """Delay future admissions without revoking work already dispatched.
+
+        Provider cooldowns share the existing FIFO schedule and never shorten
+        a longer cooldown or spend a request permit.
+        """
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("Admission cooldown must be finite and non-negative")
+        with self._lock:
+            self._next = max(self._next, monotonic() + seconds)
+
     def _try_or_enqueue(self, *, blocking: bool) -> tuple[bool, object | None]:
         """Atomically admit immediately or join the FIFO before newcomers can pass."""
         with self._lock:
@@ -66,7 +78,7 @@ class RequestAdmission(BaseRateLimiter):
             until_next = self._next - now
         # Track short admission intervals rather than imposing a 20/s ceiling.
         # Non-head waiters still yield when the schedule is already due.
-        return min(0.05, self._interval, until_next if until_next > 0 else self._interval, remaining)
+        return min(0.05, until_next if until_next > 0 else self._interval, remaining)
 
     def acquire(self, *, blocking: bool = True) -> bool:
         acquired, ticket = self._try_or_enqueue(blocking=blocking)
