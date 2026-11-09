@@ -177,7 +177,12 @@ def _message_content_str(msg: ToolMessage) -> str:
     parts: list[str] = []
     remaining = _MAX_CONTENT_FOR_WORDSET
     for block in msg.content:
-        text = block if isinstance(block, str) else block.get("text") if isinstance(block, dict) and block.get("type") == "text" else None
+        if isinstance(block, str):
+            text = block
+        elif isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text")
+        else:
+            continue
         if not isinstance(text, str) or not text:
             continue
         parts.append(text[:remaining])
