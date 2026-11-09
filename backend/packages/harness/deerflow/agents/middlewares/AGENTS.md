@@ -1,5 +1,8 @@
 ### Middleware Chain
 
+ToolProgress similarity samples string/text blocks up to 8,192 characters; never
+serialize media or mutate the returned ToolMessage for duplicate detection.
+
 JSON depth failures preserve content and never abort graphs. Unclassified
 explicit failures stay `unknown` / recoverable / `try_alternative`; incidental
 JSON fields cannot establish auth failure. Producer metadata wins. Keep real

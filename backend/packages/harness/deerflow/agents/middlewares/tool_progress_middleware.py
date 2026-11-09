@@ -170,7 +170,21 @@ def is_near_duplicate(
 
 
 def _message_content_str(msg: ToolMessage) -> str:
-    return msg.content if isinstance(msg.content, str) else ""
+    if isinstance(msg.content, str):
+        return msg.content[:_MAX_CONTENT_FOR_WORDSET]
+    if not isinstance(msg.content, list):
+        return ""
+    parts: list[str] = []
+    remaining = _MAX_CONTENT_FOR_WORDSET
+    for block in msg.content:
+        text = block if isinstance(block, str) else block.get("text") if isinstance(block, dict) and block.get("type") == "text" else None
+        if not isinstance(text, str) or not text:
+            continue
+        parts.append(text[:remaining])
+        remaining -= len(parts[-1]) + 1
+        if remaining <= 0:
+            break
+    return "\n".join(parts)
 
 
 def _result_tool_message(result: ToolMessage | Command, tool_call_id: str) -> ToolMessage | None:

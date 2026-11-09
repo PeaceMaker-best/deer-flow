@@ -54,6 +54,9 @@ The single LangGraph agent (`lead_agent`) is the runtime entry point, created vi
 
 Middlewares execute in strict order, each handling a specific concern:
 
+The tool-progress guard compares visible text in both plain-string and text-block
+results. Its bounded similarity sample excludes images and other non-text payloads.
+
 | # | Middleware | Purpose |
 |---|-----------|---------|
 | 1 | **ThreadDataMiddleware** | Creates per-thread isolated directories (workspace, uploads, outputs) |
