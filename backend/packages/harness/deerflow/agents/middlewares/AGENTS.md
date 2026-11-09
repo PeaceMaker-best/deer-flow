@@ -1,7 +1,6 @@
 ### Middleware Chain
 
-ToolProgress similarity samples string/text blocks up to 8,192 characters; never
-serialize media or mutate the returned ToolMessage for duplicate detection.
+ToolProgress samples text/string blocks within 8,192 chars; skip media and retain results.
 
 JSON depth failures preserve content and never abort graphs. Unclassified
 explicit failures stay `unknown` / recoverable / `try_alternative`; incidental
