@@ -260,6 +260,8 @@ multi-instance deployment leaves it inside `storage_path`.
 Chinese tokenization uses `jieba` only with the `memory-zh` extra.
 Malformed facts are logged and skipped during rebuild.
 A fatal rebuild failure keeps lazy retry active.
+Single-fact index replacement commits delete/insert together; any failure rolls
+back before another write or rebuild can use that connection.
 
 Storage sends adapter updates after it releases durable locks.
 Adapter failures mark the scope dirty.

@@ -111,6 +111,10 @@ the same item or undo a pause/cancellation observed after their initial read.
 
 ### Memory System
 
+Each single-fact retrieval-index update replaces its old row atomically. A failed
+replacement rolls back, preserving the previous searchable row and keeping the
+connection usable for subsequent updates and rebuilds.
+
 LLM-powered persistent context retention across conversations:
 
 - **Automatic extraction**: Analyzes conversations for user context, facts, and preferences

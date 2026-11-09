@@ -184,7 +184,7 @@ class FTS5Retrieval:
         fact_data: dict[str, Any] | None = None,
     ) -> None:
         """Insert or update a fact in the FTS5 index."""
-        with self._lock:
+        with self._lock, self._conn:
             conn = self._conn
             # Delete existing entry with same doc_id (INSERT OR REPLACE for FTS5)
             conn.execute("DELETE FROM memory_fts WHERE doc_id = ?", (fact_id,))
@@ -209,7 +209,6 @@ class FTS5Retrieval:
                     }
                 ),
             )
-            conn.commit()
 
     def replace_documents(self, documents: list[dict[str, Any]], *, scopes: list[tuple[str, str]] | None = None) -> None:
         """Atomically replace all or selected scope rows in one transaction."""
